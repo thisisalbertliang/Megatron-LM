@@ -566,3 +566,10 @@ We recommend using the `--json` argument when using WikiExtractor, which will du
 <a id="collecting-gpt-2-webtext-data"></a>
 ## Collecting GPT-2 Webtext Data
 We utilize the publicly available [OpenWebText](https://github.com/eukaryote31/openwebtext) library from [jcpeterson](https://github.com/jcpeterson/openwebtext) and [eukaryote31's](https://github.com/eukaryote31/openwebtext) work to download urls. We then filtered, cleaned, and deduplicated all downloaded content according to the procedure described in our [openwebtext](./tools/openwebtext) directory. For reddit URLs corresponding to content up to October 2018 we arrived at approximately 37GB of content.
+
+
+
+## Albert Notes
+modified files: 
+1. arguments.py
+2. training.py

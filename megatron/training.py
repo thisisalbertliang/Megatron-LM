@@ -167,6 +167,12 @@ def get_optimizer(model):
     optimizer = Adam(param_groups, lr=args.lr, weight_decay=args.weight_decay,
         betas=(args.adam_beta1, args.adam_beta2), eps=args.adam_eps)
 
+    # ALBERT - START
+    if args.deepspeed:
+        # fp16 wrapper is not required for DeepSpeed.
+        return optimizer
+    # ALBERT - END
+
     # Wrap into fp16 optimizer.
     if args.fp16:
         optimizer = FP16_Optimizer(optimizer,
@@ -214,6 +220,22 @@ def setup_model_and_optimizer(model_provider_func):
     optimizer = get_optimizer(model)
     lr_scheduler = get_learning_rate_scheduler(optimizer)
 
+    # ALBERT - START
+    if args.deepspeed:
+        import deepspeed
+
+        print_rank_0("DeepSpeed is enabled.")
+
+        model, optimizer, _, lr_scheduler = deepspeed.initialize(
+            model=model,
+            optimizer=optimizer,
+            args=args,
+            lr_scheduler=lr_scheduler,
+            mpu=mpu,
+            dist_init_required=False
+        )
+    # ALBERT - END
+
     if args.load is not None:
         args.iteration = load_checkpoint(model, optimizer, lr_scheduler)
     else:
@@ -238,34 +260,42 @@ def backward_step(optimizer, model, loss):
 
     # Backward pass.
     timers('backward-backward').start()
-    optimizer.zero_grad(set_grads_to_None=True)
-    if args.fp16:
-        optimizer.backward(loss, update_master_grads=False)
+    # ALBERT - START
+    if args.deepspeed:
+        model.backward(loss)
     else:
-        loss.backward()
+        optimizer.zero_grad(set_grads_to_None=True)
+        if args.fp16:
+            optimizer.backward(loss, update_master_grads=False)
+        else:
+            loss.backward()
+    # ALBERT - END
     timers('backward-backward').stop()
 
     # All-reduce if needed.
-    if args.DDP_impl == 'local':
+    if (not args.deepspeed) and (args.DDP_impl == 'local'):     # ALBERT
         timers('backward-allreduce').start()
         model.allreduce_params(reduce_after=False,
                                fp32_allreduce=args.fp32_allreduce)
         timers('backward-allreduce').stop()
 
-    # Update master gradients.
-    timers('backward-master-grad').start()
-    if args.fp16:
-        optimizer.update_master_grads()
-    timers('backward-master-grad').stop()
+    # ALBERT - START
+    if not args.deepspeed:
+        # Update master gradients.
+        timers('backward-master-grad').start()
+        if args.fp16:
+            optimizer.update_master_grads()
+        timers('backward-master-grad').stop()
 
-    # Clipping gradients helps prevent the exploding gradient.
-    timers('backward-clip-grad').start()
-    if args.clip_grad > 0:
-        if not args.fp16:
-            mpu.clip_grad_norm(model.parameters(), args.clip_grad)
-        else:
-            optimizer.clip_master_grads(args.clip_grad)
-    timers('backward-clip-grad').stop()
+        # Clipping gradients helps prevent the exploding gradient.
+        timers('backward-clip-grad').start()
+        if args.clip_grad > 0:
+            if not args.fp16:
+                mpu.clip_grad_norm(model.parameters(), args.clip_grad)
+            else:
+                optimizer.clip_master_grads(args.clip_grad)
+        timers('backward-clip-grad').stop()
+    # ALBERT - END
 
 
 def train_step(forward_step_func, data_iterator,
@@ -286,15 +316,19 @@ def train_step(forward_step_func, data_iterator,
 
     # Update parameters.
     timers('optimizer').start()
-    optimizer.step()
-    timers('optimizer').stop()
-
-    # Update learning rate.
+    # ALBERT - START
     skipped_iter = 0
-    if not (args.fp16 and optimizer.overflow):
-        lr_scheduler.step()
+    if args.deepspeed:
+        model.step()
     else:
-        skipped_iter = 1
+        optimizer.step()
+        # Update learning rate.
+        if not (args.fp16 and optimizer.overflow):
+            lr_scheduler.step()
+        else:
+            skipped_iter = 1
+    # ALBERT - END
+    timers('optimizer').stop()
 
     return loss_reduced, skipped_iter
 
@@ -374,7 +408,8 @@ def training_log(loss_dict, total_loss_dict, learning_rate, iteration,
                     log_string += ' {}: {:.6E} |'.format(key, avg)
                 total_loss_dict[key] = torch.cuda.FloatTensor([0.0])
         if args.fp16:
-            log_string += ' loss scale: {:.1f} |'.format(loss_scale)
+            log_string += ' loss scale: {:.1f} |'.format(
+                optimizer.cur_scale if args.deepspeed else loss_scale)      # ALBERT
         log_string += ' number of skipped iterations: {:3d} |'.format(
             total_loss_dict[skipped_iters_key])
         log_string += ' number of nan iterations: {:3d} |'.format(

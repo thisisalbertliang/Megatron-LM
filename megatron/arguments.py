@@ -20,6 +20,7 @@ import os
 
 import torch
 from megatron import fused_kernels
+import deepspeed
 
 def parse_args(extra_args_provider=None, defaults={},
                ignore_unknown_args=False):
@@ -40,6 +41,11 @@ def parse_args(extra_args_provider=None, defaults={},
     parser = _add_data_args(parser)
     parser = _add_autoresume_args(parser)
     parser = _add_realm_args(parser)
+
+    # ALBERT - START
+    # Include DeepSpeed configuration arguments
+    parser = deepspeed.add_config_arguments(parser)
+    # ALBERT - END
 
     # Custom arguments.
     if extra_args_provider is not None:
