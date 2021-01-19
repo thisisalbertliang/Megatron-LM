@@ -364,3 +364,20 @@ class TransformerLanguageModel(MegatronModule):
                 'could not find data for pooler in the checkpoint'
             self.pooler.load_state_dict(state_dict[self._pooler_key],
                                         strict=strict)
+
+    def to_layers(self):
+        layers = [
+            self._embedding_layer,
+            *self.transformer.to_layers()
+            # ignoring pooler since add_pooler=False for GPT2Model
+        ]
+        return layers
+
+    def _embedding_layer(self, inputs):
+        input_ids, position_ids, attention_mask, labels, tokentype_ids, \
+        layer_past, get_key_value, forward_method_parallel_output = inputs
+        # Embeddings.
+        embedding_output = self.embedding(input_ids, position_ids,
+                                          tokentype_ids=tokentype_ids)
+        return embedding_output, attention_mask, layer_past, get_key_value, \
+               labels, forward_method_parallel_output   # inputs for later GPT2Model output layer

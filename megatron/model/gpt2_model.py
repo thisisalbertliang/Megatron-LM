@@ -103,3 +103,38 @@ class GPT2Model(MegatronModule):
         if self._language_model_key in state_dict:
             state_dict = state_dict[self._language_model_key]
         self.language_model.load_state_dict(state_dict, strict=strict)
+
+    def to_layers(self):
+        layers = [
+            *self.language_model.to_layers(),
+            self._output_layer
+        ]
+        return layers
+
+    def _output_layer(self, inputs):
+        lm_output, get_key_value, labels, forward_method_parallel_output = inputs
+        if get_key_value:
+            lm_output, presents = lm_output
+
+        # output
+        parallel_output = self.parallel_output
+        if forward_method_parallel_output is not None:
+            parallel_output = forward_method_parallel_output
+        output = parallel_lm_logits(
+            lm_output,
+            self.language_model.embedding.word_embeddings.weight,
+            parallel_output)
+
+        if get_key_value:
+            output = [output, presents]
+
+        if labels is None:
+            return output
+        else:
+            if self.fp16_lm_cross_entropy:
+                assert output.dtype == torch.half
+                loss = mpu.vocab_parallel_cross_entropy(output, labels)
+            else:
+                loss = mpu.vocab_parallel_cross_entropy(output.float(), labels)
+            return loss
+
