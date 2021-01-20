@@ -86,6 +86,15 @@ def pretrain(train_valid_test_dataset_provider, model_provider,
             train_valid_test_dataset_provider)
     timers('train/valid/test data iterators').stop()
 
+    # ALBERT DEBUGGING - START
+    # print("ALBERT!!!!!!!!!!!!!!!!!!!!")
+    # print('type(train_data_iterator)', type(train_data_iterator))
+    # for x in train_data_iterator:
+    #     print('type(x)', type(x))
+    #     print(x)
+    #     break
+    # ALBERT DEBUGGING - END
+
     # Print setup timing.
     print_rank_0('done with setups ...')
     timers.log(['model and optimizer', 'train/valid/test data iterators'])
@@ -334,7 +343,7 @@ def train_step(forward_step_func, data_iterator,
 
 
 def training_log(loss_dict, total_loss_dict, learning_rate, iteration,
-                 loss_scale, report_memory_flag, skipped_iter):
+                 loss_scale, report_memory_flag, skipped_iter, optimizer):
     """Log training information such as losses, timing, ...."""
     args = get_args()
     timers = get_timers()
@@ -457,7 +466,8 @@ def train(forward_step_func, model, optimizer, lr_scheduler,
         report_memory_flag = training_log(loss_dict, total_loss_dict,
                                           optimizer.param_groups[0]['lr'],
                                           iteration, loss_scale,
-                                          report_memory_flag, skipped_iter)
+                                          report_memory_flag, skipped_iter,
+                                          optimizer)    # ALBERT, added for logging optimizer.cur_scale
 
         # Autoresume
         if args.adlr_autoresume and \

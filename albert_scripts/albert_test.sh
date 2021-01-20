@@ -67,7 +67,7 @@ gpt_options=" \
        --deepspeed_config ${config_json}
 #"
 
-run_cmd="deepspeed --hostfile ${HOSTFILE} --num_nodes ${NUM_WORKERS} --num_gpus ${NUM_GPUS_PER_WORKER} pretrain_gpt2.py $@ ${gpt_options}"
+run_cmd="deepspeed --hostfile ${HOSTFILE} --num_nodes ${NUM_WORKERS} --num_gpus ${NUM_GPUS_PER_WORKER} albert_pretrain_gpt2.py $@ ${gpt_options}"
 echo ${run_cmd}
 eval ${run_cmd}
 

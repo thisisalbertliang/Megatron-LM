@@ -6,7 +6,7 @@ MP_SIZE=4
 NUM_WORKERS=4
 NUM_GPUS_PER_WORKER=1
 
-HOSTFILE="/users/sangkeuc/albert/ds-megatron/Megatron-LM-No-PP/albert_scripts/myhostfile"
+HOSTFILE="/users/sangkeuc/albert/ds-megatron/old-Megatron-LM/albert_scripts/hostfile_sang"
 DATA_PATH=/users/sangkeuc/albert/ds-megatron/Megatron-LM-No-PP/preprocessed_data/my-gpt2_text_document
 
 config_json="/users/sangkeuc/albert/ds-megatron/Megatron-LM-No-PP/albert_scripts/ds_zero2_config.json"
@@ -63,9 +63,11 @@ gpt_options=" \
        --eval-interval 1000 \
        --eval-iters 10 \
        --fp16 \
-       --deepspeed \
-       --deepspeed_config ${config_json}
 #"
+gpt_options="${gpt_options}
+               --deepspeed \
+               --deepspeed_config ${config_json} \
+"
 
 run_cmd="deepspeed --hostfile ${HOSTFILE} --num_nodes ${NUM_WORKERS} --num_gpus ${NUM_GPUS_PER_WORKER} pretrain_gpt2.py $@ ${gpt_options}"
 echo ${run_cmd}
