@@ -614,61 +614,58 @@ class ParallelTransformer(MegatronModule):
 
     def to_layers(self):
         layers = [
-            ParallelTransformer._data_format_change,
-            ParallelTransformer._initialize_presents,   # ignoring checkpoint activations
+            # ParallelTransformer._data_format_change,
+            # ParallelTransformer._initialize_presents,   # ignoring checkpoint activations
             *(self._transformer_layer_factory(index) for index in range(self.num_layers)),
-            ParallelTransformer._revert_data_format_change,
+            # ParallelTransformer._revert_data_format_change,
             self._final_layernorm
         ]
         return layers
 
-    @staticmethod
-    def _data_format_change(inputs):
-        hidden_states, attention_mask, layer_past, get_key_value, \
-        labels, forward_method_parallel_output \
-            = inputs
-        hidden_states = hidden_states.transpose(0, 1).contiguous()
-        return hidden_states, attention_mask, layer_past, get_key_value, labels, forward_method_parallel_output
+    # @staticmethod
+    # def _data_format_change(inputs):
+    #     hidden_states, attention_mask, layer_past, get_key_value, \
+    #     labels, forward_method_parallel_output \
+    #         = inputs
+    #     hidden_states = hidden_states.transpose(0, 1).contiguous()
+    #     return hidden_states, attention_mask, layer_past, get_key_value, labels, forward_method_parallel_output
 
-    @staticmethod
-    def _initialize_presents(inputs):
-        hidden_states, attention_mask, layer_past, get_key_value, \
-        labels, forward_method_parallel_output \
-            = inputs
-        return hidden_states, attention_mask, layer_past, get_key_value, [] if get_key_value else None, labels, forward_method_parallel_output
+    # @staticmethod
+    # def _initialize_presents(inputs):
+    #     hidden_states, attention_mask, layer_past, get_key_value, \
+    #     labels, forward_method_parallel_output \
+    #         = inputs
+    #     return hidden_states, attention_mask, layer_past, get_key_value, [] if get_key_value else None, labels, forward_method_parallel_output
 
     def _transformer_layer_factory(self, index):
         def _transformer_layer(inputs):
-            hidden_states, attention_mask, layer_past, get_key_value, presents, \
-            labels, forward_method_parallel_output \
-                = inputs
+            hidden_states, attention_mask, \
+            labels, loss_mask = inputs     # 2nd line is input for later GPT2Model output layer
+
             layer = self._get_layer(index)
-            past = None
-            if layer_past is not None:
-                past = layer_past[index]
             hidden_states = layer(hidden_states,
-                                  attention_mask,
-                                  layer_past=past,
-                                  get_key_value=get_key_value)
-            if get_key_value:
-                hidden_states, present = hidden_states
-                presents.append(present)
-            return hidden_states, attention_mask, layer_past, get_key_value, presents, labels, forward_method_parallel_output
+                                  attention_mask)
+
+            return hidden_states, attention_mask,\
+                   labels, loss_mask    # 2nd line is input for later GPT2Model output layer
         return _transformer_layer
 
-    @staticmethod
-    def _revert_data_format_change(inputs):
-        hidden_states, attention_mask, layer_past, get_key_value, presents, \
-        labels, forward_method_parallel_output \
-            = inputs
-        hidden_states = hidden_states.transpose(0, 1).contiguous()
-        return hidden_states, attention_mask, layer_past, get_key_value, presents, labels, forward_method_parallel_output
+    # @staticmethod
+    # def _revert_data_format_change(inputs):
+    #     hidden_states, attention_mask, layer_past, get_key_value, presents, \
+    #     labels, forward_method_parallel_output \
+    #         = inputs
+    #     hidden_states = hidden_states.transpose(0, 1).contiguous()
+    #     return hidden_states, attention_mask, layer_past, get_key_value, presents, labels, forward_method_parallel_output
 
     def _final_layernorm(self, inputs):
-        hidden_states, attention_mask, layer_past, get_key_value, presents, \
-        labels, forward_method_parallel_output \
+        hidden_states, attention_mask, \
+        labels, loss_mask \
             = inputs
+
+        # reverting data format change [s b h] --> [b s h]
+        hidden_states = hidden_states.transpose(0, 1).contiguous()
+
         output = self.final_layernorm(hidden_states)
-        if get_key_value:
-            output = [output, presents]
-        return output, get_key_value, labels, forward_method_parallel_output
+
+        return output, labels, loss_mask

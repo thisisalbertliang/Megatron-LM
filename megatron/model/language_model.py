@@ -374,10 +374,13 @@ class TransformerLanguageModel(MegatronModule):
         return layers
 
     def _embedding_layer(self, inputs):
-        input_ids, position_ids, attention_mask, labels, tokentype_ids, \
-        layer_past, get_key_value, forward_method_parallel_output = inputs
+        input_ids, position_ids, attention_mask, labels, loss_mask = inputs
         # Embeddings.
-        embedding_output = self.embedding(input_ids, position_ids,
-                                          tokentype_ids=tokentype_ids)
-        return embedding_output, attention_mask, layer_past, get_key_value, \
-               labels, forward_method_parallel_output   # inputs for later GPT2Model output layer
+        embedding_output = self.embedding(input_ids, position_ids)
+
+        # data format change to avoid explicit tranposes : [b s h] --> [s b h]
+        hidden_states = embedding_output.transpose(0, 1).contiguous()
+
+        return hidden_states, attention_mask, \
+            labels, loss_mask   # inputs for later GPT2Model output layer
+

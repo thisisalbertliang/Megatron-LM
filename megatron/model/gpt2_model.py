@@ -112,21 +112,15 @@ class GPT2Model(MegatronModule):
         return layers
 
     def _output_layer(self, inputs):
-        lm_output, get_key_value, labels, forward_method_parallel_output = inputs
-        if get_key_value:
-            lm_output, presents = lm_output
+        lm_output, labels, loss_mask = inputs
 
         # output
         parallel_output = self.parallel_output
-        if forward_method_parallel_output is not None:
-            parallel_output = forward_method_parallel_output
+
         output = parallel_lm_logits(
             lm_output,
             self.language_model.embedding.word_embeddings.weight,
             parallel_output)
-
-        if get_key_value:
-            output = [output, presents]
 
         if labels is None:
             return output
@@ -136,5 +130,9 @@ class GPT2Model(MegatronModule):
                 loss = mpu.vocab_parallel_cross_entropy(output, labels)
             else:
                 loss = mpu.vocab_parallel_cross_entropy(output.float(), labels)
+
+            loss_mask = loss_mask.view(-1)
+            loss = torch.sum(loss.view(-1) * loss_mask) / loss_mask.sum()
+
             return loss
 
