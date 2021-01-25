@@ -55,6 +55,10 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
         masked_target_1d = masked_target.view(-1)
         arange_1d = torch.arange(start=0, end=logits_2d.size()[0],
                                  device=logits_2d.device)
+
+        # print('ALBERT DEBUG: ' + 'arange_1d.shape' + str(arange_1d.shape))
+        # print('ALBERT DEBUG: ' + 'masked_target_1d.shape' + str(masked_target_1d.shape))
+
         predicted_logits_1d = logits_2d[arange_1d, masked_target_1d]
         predicted_logits_1d = predicted_logits_1d.clone().contiguous()
         predicted_logits = predicted_logits_1d.view_as(target)

@@ -78,6 +78,13 @@ def forward_step(data_iterator, model):
     timers('batch generator').start()
     tokens, labels, loss_mask, attention_mask, position_ids = get_batch(
         data_iterator)
+
+    # print_rank_0('ALBERT DEBUG: ' + 'tokens.shape: ' + str(tokens.shape))
+    # print_rank_0('ALBERT DEBUG: ' + 'labels.shape: ' + str(labels.shape))
+    # print_rank_0('ALBERT DEBUG: ' + 'loss_mask.shape: ' + str(loss_mask.shape))
+    # print_rank_0('ALBERT DEBUG: ' + 'attention_mask.shape: ' + str(attention_mask.shape))
+    # print_rank_0('ALBERT DEBUG: ' + 'position_ids.shape: ' + str(position_ids.shape))
+
     timers('batch generator').stop()
     # Forward model.
     losses = model(tokens, position_ids, attention_mask, labels=labels)
@@ -86,6 +93,8 @@ def forward_step(data_iterator, model):
 
     # Reduce loss for logging.
     reduced_loss = reduce_losses([loss])
+
+    print('ALBERT DEBUG: ', 'loss: ', loss)
 
     return loss, {'lm loss': reduced_loss[0]}
 

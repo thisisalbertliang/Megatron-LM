@@ -172,6 +172,9 @@ class Embedding(MegatronModule):
     def forward(self, input_ids, position_ids, tokentype_ids=None):
         # Embeddings.
         words_embeddings = self.word_embeddings(input_ids)
+
+        # print_rank_0("im here!!!")
+
         position_embeddings = self.position_embeddings(position_ids)
         embeddings = words_embeddings + position_embeddings
         if tokentype_ids is not None:
@@ -381,12 +384,17 @@ class TransformerLanguageModel(MegatronModule):
         return layers
 
     def _embedding_layer(self, tokens):
-        print_rank_0('ALBERT DEBUG' + 'GOT THIS tokens' + str(tokens))
+        # print_rank_0('ALBERT DEBUG: ' + 'GOT THIS tokens ' + str(tokens))
+        # print_rank_0('ALBERT DEBUG: ' + 'GOT THIS shape ' + str(tokens.shape))
+        print_rank_0('ALBERT DEBUG: ' + 'entered _embedding_layer!!!!!!!!!')
 
         args = get_args()
         tokenizer = get_tokenizer()
 
         labels = tokens[:, 1:].contiguous()
+        # print_rank_0('ALBERT DEBUG: ' + 'labels: ' + str(labels))
+        # print_rank_0('ALBERT DEBUG: ' + 'labels.shape: ' + str(labels.shape))
+
         tokens = tokens[:, :-1].contiguous()
         # Get the masks and postition ids.
         attention_mask, loss_mask, position_ids = get_ltor_masks_and_position_ids(
@@ -397,7 +405,16 @@ class TransformerLanguageModel(MegatronModule):
             args.eod_mask_loss)
 
         input_ids, position_ids, attention_mask, labels, loss_mask = tokens, position_ids, attention_mask, labels, loss_mask
+
+        # print_rank_0('ALBERT DEBUG: ' + 'input_ids.shape: ' + str(input_ids.shape))
+        # print_rank_0('ALBERT DEBUG: ' + 'labels.shape: ' + str(labels.shape))
+        # print_rank_0('ALBERT DEBUG: ' + 'loss_mask.shape: ' + str(loss_mask.shape))
+        # print_rank_0('ALBERT DEBUG: ' + 'attention_mask.shape: ' + str(attention_mask.shape))
+        # print_rank_0('ALBERT DEBUG: ' + 'position_ids.shape: ' + str(position_ids.shape))
+
         # Embeddings.
+        print_rank_0('ALBERT DEBUG: ' + 'str(type(input_ids))' + str(type(input_ids)))
+        print_rank_0('ALBERT DEBUG: ' + 'str(type(position_ids))' + str(type(position_ids)))
         embedding_output = self.embedding(input_ids, position_ids)
 
         # data format change to avoid explicit tranposes : [b s h] --> [s b h]

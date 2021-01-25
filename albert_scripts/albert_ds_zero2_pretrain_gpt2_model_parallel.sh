@@ -37,9 +37,9 @@ config_json="/users/sangkeuc/albert/ds-megatron/old-Megatron-LM/albert_scripts/a
 #"
 gpt_options=" \
        --model-parallel-size $MP_SIZE \
-       --num-layers 12 \
-       --hidden-size 512 \
-       --num-attention-heads 8 \
+       --num-layers 2 \
+       --hidden-size 256 \
+       --num-attention-heads 4 \
        --batch-size 8 \
        --seq-length 1024 \
        --max-position-embeddings 1024 \

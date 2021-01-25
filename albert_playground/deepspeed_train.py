@@ -1,4 +1,6 @@
 import torch
+from torch.utils.data import Dataset
+import numpy as np
 
 from megatron import get_args
 from megatron import print_rank_0
@@ -19,62 +21,61 @@ from megatron.training import get_optimizer
 from megatron.training import setup_model_and_optimizer
 from megatron.utils import print_rank_0
 
+
 class TrainDataIterator:
 
-    def __init__(self, data_iterator):
-        self.data_iterator = data_iterator
+    def __init__(self, megatron_dataset, batch_size):
+        self.megatron_dataset = megatron_dataset
+        self.num_batch_done = 0
+        self.batch_size = batch_size
+        self.global_batch_size = batch_size * mpu.get_data_parallel_world_size()
+        self.args = get_args()
+        # self.cur_idx = 0
+        # print_rank_0('ALBERT DEBUG: ' + 'mpu.get_data_parallel_world_size(): ' + str(mpu.get_data_parallel_world_size()))
+        # print_rank_0('ALBERT DEBUG: ' + 'batch_size: ' + str(batch_size))
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        # Items and their type.
-        # keys = ['text']
-        # datatype = torch.int64
-
-        # Broadcast data.
-        # if self.data_iterator is not None:
-        #     data = next(self.data_iterator)
-        # else:
-        #     data = None
-        # data_b = mpu.broadcast_data(keys, data, datatype)
-        data_b = next(self.data_iterator)
-
-        tokens_ = data_b['text'].long()
-        
-        return tokens_
-
-        # print_rank_0('ALBERT DEBUG: ' + 'data_b: ' + str(data_b))
-        # 
-        # # Unpack.
-        # tokens_ = data_b['text'].long()
-        # labels = tokens_[:, 1:].contiguous()
-        # tokens = tokens_[:, :-1].contiguous()
-        # 
-        # # Get the masks and postition ids.
-        # attention_mask, loss_mask, position_ids = get_ltor_masks_and_position_ids(
-        #     tokens,
-        #     tokenizer.eod,
-        #     args.reset_position_ids,
-        #     args.reset_attention_mask,
-        #     args.eod_mask_loss)
-        # 
-        # print_rank_0('ALBERT DEBUG' + 'tokens' + str(tokens))
-        # print_rank_0('ALBERT DEBUG' + 'position_ids' + str(position_ids))
-        # print_rank_0('ALBERT DEBUG' + 'attention_mask' + str(attention_mask))
-        # print_rank_0('ALBERT DEBUG' + 'labels' + str(labels))
-        # print_rank_0('ALBERT DEBUG' + 'loss_mask' + str(loss_mask))
-        # 
-        # return tokens, position_ids, attention_mask, labels, loss_mask
+        batch = torch.tensor((), dtype=torch.int64)
+        batch = batch.new_zeros((mpu.get_data_parallel_world_size(), self.batch_size, self.args.seq_length + 1), dtype=torch.int64)
+        for batch_idx in range(self.global_batch_size):
+            dataset_idx = self.num_batch_done * self.global_batch_size + batch_idx
+            sample = self.megatron_dataset[dataset_idx]
+            # sample = mpu.broadcast_data(['text'], sample, torch.int64)
+            tokens = sample['text']
+            tokens = torch.tensor(tokens.reshape((1, self.args.seq_length + 1)), dtype=torch.int64)
+            batch[batch_idx // self.batch_size, batch_idx % self.batch_size, :] = tokens
+        self.num_batch_done += 1
+        # print_rank_0('ALBERT DEBUG: ' + 'batch.shape: ' + str(batch.shape))
+        # print_rank_0('ALBERT DEBUG: ' + 'batch: ' + str(batch))
+        return batch
 
 
-def deepspeed_model_pipeline_engine_provider():
+class DeepSpeedDataset(Dataset):
+    def __init__(self, megatron_dataset):
+        self.megatron_dataset = megatron_dataset
+
+    def __len__(self):
+        return len(self.megatron_dataset)
+
+    def __getitem__(self, idx):
+        sample = self.megatron_dataset[idx]
+        tokens: numpy.ndarray = sample['text']
+        tokens = tokens.reshape((1, 1025))
+        print_rank_0('ALBERT DEBUG: ' + 'str(tokens.shape): ' + str(tokens.shape))
+        return tokens
+
+
+def deepspeed_model_pipeline_engine_provider(train_ds):
     """Build the model."""
     print_rank_0('building GPT2 model ...')
 
     args = get_args()
 
     model = GPT2Model(num_tokentypes=0, parallel_output=True)
+    model = model.to(torch.cuda.current_device())
     model_layers = model.to_layers()
     model_pipe = deepspeed.pipe.PipelineModule(model_layers, num_stages=1)
 
@@ -84,7 +85,8 @@ def deepspeed_model_pipeline_engine_provider():
         args=args,
         model=model_pipe,
         model_parameters=[p for p in model_pipe.parameters() if p.requires_grad],
-        optimizer=optimizer
+        optimizer=optimizer,
+        training_data=train_ds
     )
 
     return model_engine
@@ -116,15 +118,40 @@ if __name__ == "__main__":
     args = get_args()
     args.iteration = 0
 
-    model_pipeline_engine = deepspeed_model_pipeline_engine_provider()
+    args = get_args()
+    print_rank_0('ALBERT DEBUG: ' + '> building train, validation, and test datasets ...')
+    # Rank, size, and global batch size.
+    data_parallel_size = mpu.get_data_parallel_world_size()
+    global_batch_size = args.batch_size * data_parallel_size
 
-    train_data_iterator, valid_data_iterator, test_data_iterator \
-        = build_train_valid_test_data_iterators(train_valid_test_datasets_provider)
+    # Number of train/valid/test samples.
+    train_iters = args.train_iters
+    eval_iters = (train_iters // args.eval_interval + 1) * args.eval_iters
+    test_iters = args.eval_iters
+    train_val_test_num_samples = [train_iters * global_batch_size,
+                                  eval_iters * global_batch_size,
+                                  test_iters * global_batch_size]
+    # print_rank_0('ALBERT DEBUG: ' + ' > datasets target sizes (minimum size):')
+    # print_rank_0('ALBERT DEBUG: ' + '    train:      {}'.format(train_val_test_num_samples[0]))
+    # print_rank_0('ALBERT DEBUG: ' + '    validation: {}'.format(train_val_test_num_samples[1]))
+    # print_rank_0('ALBERT DEBUG: ' + '    test:       {}'.format(train_val_test_num_samples[2]))
 
-    model_pipeline_engine.train()
+    # Build the datasets.
+    train_ds, valid_ds, test_ds = train_valid_test_datasets_provider(
+        train_val_test_num_samples)
 
-    train_batch_iter = TrainDataIterator(train_data_iterator)
+    # print_rank_0('ALBERT DEBUG: ' + 'train_ds.__getitem__(0): ' + str(train_ds.__getitem__(0)))
+    # print_rank_0('ALBERT DEBUG: ' + 'type(train_ds.__getitem__(0)): ' + str(type(train_ds.__getitem__(0))))
+    # print_rank_0('ALBERT DEBUG: ' + 'len(train_ds.__getitem__(0)): ' + str(len(train_ds.__getitem__(0))))
+    # print_rank_0('ALBERT DEBUG: ' + 'type(train_ds.__getitem__(0)["text"]): ' + str(type(train_ds.__getitem__(0)['text'])))
+    # print_rank_0('ALBERT DEBUG: ' + 'train_ds.__getitem__(0)["text"].shape: ' + str(train_ds.__getitem__(0)['text'].shape))
+
+    model_pipeline_engine = deepspeed_model_pipeline_engine_provider(None)
+
+    train_data_iter = TrainDataIterator(train_ds, model_pipeline_engine.micro_batch_size)
+
+    # print_rank_0('ALBERT DEBUG: ' + 'torch.cuda.current_device(): ' + str(torch.cuda.current_device()))
 
     for step in range(args.train_iters):
-        loss = model_pipeline_engine.train_batch(data_iter=train_batch_iter)
+        loss = model_pipeline_engine.train_batch(data_iter=train_data_iter)
         print('ALBERT DEBUG:', 'loss', loss)
