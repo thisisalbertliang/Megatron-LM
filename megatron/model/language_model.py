@@ -24,6 +24,13 @@ from megatron.module import MegatronModule
 from megatron.model.transformer import ParallelTransformer
 from megatron.model.utils import get_linear_layer
 from megatron.model.utils import init_method_normal, scaled_init_method_normal
+from megatron.utils import print_rank_0
+
+from megatron.utils import get_ltor_masks_and_position_ids
+from megatron import get_args
+from megatron import print_rank_0
+from megatron import get_timers
+from megatron import get_tokenizer
 
 def parallel_lm_logits(input_, word_embeddings_weight, parallel_output,
                        bias=None):
@@ -373,8 +380,23 @@ class TransformerLanguageModel(MegatronModule):
         ]
         return layers
 
-    def _embedding_layer(self, inputs):
-        input_ids, position_ids, attention_mask, labels, loss_mask = inputs
+    def _embedding_layer(self, tokens):
+        print_rank_0('ALBERT DEBUG' + 'GOT THIS tokens' + str(tokens))
+
+        args = get_args()
+        tokenizer = get_tokenizer()
+
+        labels = tokens[:, 1:].contiguous()
+        tokens = tokens[:, :-1].contiguous()
+        # Get the masks and postition ids.
+        attention_mask, loss_mask, position_ids = get_ltor_masks_and_position_ids(
+            tokens,
+            tokenizer.eod,
+            args.reset_position_ids,
+            args.reset_attention_mask,
+            args.eod_mask_loss)
+
+        input_ids, position_ids, attention_mask, labels, loss_mask = tokens, position_ids, attention_mask, labels, loss_mask
         # Embeddings.
         embedding_output = self.embedding(input_ids, position_ids)
 

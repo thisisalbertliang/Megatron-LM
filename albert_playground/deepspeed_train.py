@@ -15,9 +15,11 @@ import deepspeed
 
 from megatron.initialize import initialize_megatron
 from megatron.training import build_train_valid_test_data_iterators
+from megatron.training import get_optimizer
+from megatron.training import setup_model_and_optimizer
+from megatron.utils import print_rank_0
 
-
-class TrainBatchIterator:
+class TrainDataIterator:
 
     def __init__(self, data_iterator):
         self.data_iterator = data_iterator
@@ -26,35 +28,44 @@ class TrainBatchIterator:
         return self
 
     def __next__(self):
-        """Generate a batch"""
-        args = get_args()
-        tokenizer = get_tokenizer()
-
         # Items and their type.
-        keys = ['text']
-        datatype = torch.int64
+        # keys = ['text']
+        # datatype = torch.int64
 
         # Broadcast data.
-        if self.data_iterator is not None:
-            data = next(self.data_iterator)
-        else:
-            data = None
-        data_b = mpu.broadcast_data(keys, data, datatype)
+        # if self.data_iterator is not None:
+        #     data = next(self.data_iterator)
+        # else:
+        #     data = None
+        # data_b = mpu.broadcast_data(keys, data, datatype)
+        data_b = next(self.data_iterator)
 
-        # Unpack.
         tokens_ = data_b['text'].long()
-        labels = tokens_[:, 1:].contiguous()
-        tokens = tokens_[:, :-1].contiguous()
+        
+        return tokens_
 
-        # Get the masks and postition ids.
-        attention_mask, loss_mask, position_ids = get_ltor_masks_and_position_ids(
-            tokens,
-            tokenizer.eod,
-            args.reset_position_ids,
-            args.reset_attention_mask,
-            args.eod_mask_loss)
-
-        return tokens, position_ids, attention_mask, labels, loss_mask
+        # print_rank_0('ALBERT DEBUG: ' + 'data_b: ' + str(data_b))
+        # 
+        # # Unpack.
+        # tokens_ = data_b['text'].long()
+        # labels = tokens_[:, 1:].contiguous()
+        # tokens = tokens_[:, :-1].contiguous()
+        # 
+        # # Get the masks and postition ids.
+        # attention_mask, loss_mask, position_ids = get_ltor_masks_and_position_ids(
+        #     tokens,
+        #     tokenizer.eod,
+        #     args.reset_position_ids,
+        #     args.reset_attention_mask,
+        #     args.eod_mask_loss)
+        # 
+        # print_rank_0('ALBERT DEBUG' + 'tokens' + str(tokens))
+        # print_rank_0('ALBERT DEBUG' + 'position_ids' + str(position_ids))
+        # print_rank_0('ALBERT DEBUG' + 'attention_mask' + str(attention_mask))
+        # print_rank_0('ALBERT DEBUG' + 'labels' + str(labels))
+        # print_rank_0('ALBERT DEBUG' + 'loss_mask' + str(loss_mask))
+        # 
+        # return tokens, position_ids, attention_mask, labels, loss_mask
 
 
 def deepspeed_model_pipeline_engine_provider():
@@ -66,9 +77,14 @@ def deepspeed_model_pipeline_engine_provider():
     model = GPT2Model(num_tokentypes=0, parallel_output=True)
     model_layers = model.to_layers()
     model_pipe = deepspeed.pipe.PipelineModule(model_layers, num_stages=1)
+
+    optimizer = get_optimizer(model_pipe)
+
     model_engine, _, _, _ = deepspeed.initialize(
         args=args,
-        model=model_pipe
+        model=model_pipe,
+        model_parameters=[p for p in model_pipe.parameters() if p.requires_grad],
+        optimizer=optimizer
     )
 
     return model_engine
@@ -98,6 +114,7 @@ if __name__ == "__main__":
     initialize_megatron(extra_args_provider=None, args_defaults=args_defaults)
 
     args = get_args()
+    args.iteration = 0
 
     model_pipeline_engine = deepspeed_model_pipeline_engine_provider()
 
@@ -106,7 +123,7 @@ if __name__ == "__main__":
 
     model_pipeline_engine.train()
 
-    train_batch_iter = TrainBatchIterator(train_data_iterator)
+    train_batch_iter = TrainDataIterator(train_data_iterator)
 
     for step in range(args.train_iters):
         loss = model_pipeline_engine.train_batch(data_iter=train_batch_iter)

@@ -1,7 +1,7 @@
 #! /bin/bash
 
 # Change for multinode config
-MP_SIZE=4
+MP_SIZE=1
 
 NUM_WORKERS=4
 NUM_GPUS_PER_WORKER=1
@@ -67,7 +67,7 @@ gpt_options=" \
 
 #       --fp16 \
 
-run_cmd="deepspeed --hostfile ${HOSTFILE} --num_nodes ${NUM_WORKERS} --num_gpus ${NUM_GPUS_PER_WORKER} pretrain_gpt2.py $@ ${gpt_options}"
+run_cmd="deepspeed --hostfile ${HOSTFILE} --num_nodes ${NUM_WORKERS} --num_gpus ${NUM_GPUS_PER_WORKER} albert_playground/deepspeed_train.py $@ ${gpt_options}"
 echo ${run_cmd}
 eval ${run_cmd}
 

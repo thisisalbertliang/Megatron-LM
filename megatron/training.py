@@ -563,6 +563,9 @@ def build_train_valid_test_data_iterators(
 
     print_rank_0('> building train, validation, and test datasets ...')
     # Data loader only on rank 0 of each model parallel group.
+
+    print('ALBERT DEBUG:', 'RANK', mpu.get_model_parallel_rank(), 'entered build_train_valid_test_data_iterators')
+
     if mpu.get_model_parallel_rank() == 0:
         # Rank, size, and global batch size.
         data_parallel_size = mpu.get_data_parallel_world_size()
