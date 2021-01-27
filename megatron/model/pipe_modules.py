@@ -1,13 +1,15 @@
 import torch
 import torch.nn as nn
+from deepspeed.pipe import PipelineModule, LayerSpec, TiedLayerSpec
 
 from megatron import get_args
 from megatron import mpu
+from megatron import print_rank_0
 from megatron.mpu import LayerNorm
 from megatron.module import MegatronModule
 from megatron.model.transformer import ParallelTransformerLayer
-from megatron.model.language_model import Embedding, init_method_normal, scaled_init_method_normal
-
+from megatron.model.language_model import Embedding, init_method_normal, scaled_init_method_normal, parallel_lm_logits
+from megatron.model.gpt2_model import gpt2_attention_mask_func
 
 torch._C._jit_set_profiling_mode(False)
 torch._C._jit_set_profiling_executor(False)
@@ -36,6 +38,13 @@ def get_pipe_language_model(attention_mask_func, num_tokentypes,
     language_model_key = 'language_model'
 
     return language_model, language_model_key
+
+
+def tied_embedding_forward(module: EmbeddingPipe, inputs):
+    outputs = parallel_lm_logits(inputs,
+                                 module.word_embeddings.weight,
+                                 True)
+    return outputs
 
 
 class TransposePipe(MegatronModule):
@@ -177,3 +186,50 @@ class TransformerLanguageModelPipe(MegatronModule):
 
         return layers
 
+
+class GPT2ModelPipe(PipelineModule):
+    """GPT-2 Language model."""
+
+    def __init__(self, num_tokentypes=0, parallel_output=True):
+        args = get_args()
+
+        self.parallel_output = parallel_output
+        self.fp16_lm_cross_entropy = args.fp16_lm_cross_entropy
+
+        init_method = init_method_normal(args.init_method_std)
+        scaled_init_method = scaled_init_method_normal(args.init_method_std,
+                                                       args.num_layers)
+
+        specs = []
+        # Embedding
+        embedding_args = [args.hidden_size, args.padded_vocab_size,
+                          args.padded_vocab_size, args.max_position_embeddings,
+                          init_method, num_tokentypes]
+        specs.append(TiedLayerSpec("embed", EmbeddingPipe, *embedding_args))
+        # Transformer
+        specs.append(LayerSpec(TransposePipe))
+        if args.checkpoint_activations:
+            specs.append(LayerSpec(CheckpointResetPipe))
+        for i in range(args.num_layers):
+            if args.checkpoint_activations:
+                spec = LayerSpec(ParallelTransformerLayerCheckpointPipe,
+                                 gpt2_attention_mask_func,
+                                 init_method,
+                                 scaled_init_method,
+                                 i + 1)
+            else:
+                spec = LayerSpec(ParallelTransformerLayerPipe,
+                                 gpt2_attention_mask_func,
+                                 init_method,
+                                 scaled_init_method,
+                                 i + 1)
+            specs.append(spec)
+        specs.append(LayerSpec(TransposePipe))
+        specs.append(LayerSpec(FinalLayerNormPipe))
+        specs.append(TiedLayerSpec("embed", EmbeddingPipe, *embedding_args,
+                                   forward_fn=tied_embedding_forward))
+        print_rank_0(specs)
+        super().__init__(layers=specs,
+                         loss_fn=mpu.vocab_parallel_cross_entropy,
+                         num_stages=2,
+                         partition_method="parameters")
