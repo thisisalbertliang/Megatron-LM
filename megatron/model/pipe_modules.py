@@ -39,6 +39,14 @@ def get_pipe_language_model(attention_mask_func, num_tokentypes,
 
     return language_model, language_model_key
 
+class EmbeddingPipe(Embedding):
+    def forward(self, inputs):
+        input_ids, position_ids, attention_mask, tokentype_ids = inputs
+
+        embedding_output = super().forward(input_ids, position_ids, tokentype_ids)
+
+        return (embedding_output, attention_mask)
+
 
 def tied_embedding_forward(module: EmbeddingPipe, inputs):
     outputs = parallel_lm_logits(inputs,
@@ -73,15 +81,6 @@ class FinalLayerNormPipe(MegatronModule):
 
         return output
         #return (output, attention_mask)
-
-
-class EmbeddingPipe(Embedding):
-    def forward(self, inputs):
-        input_ids, position_ids, attention_mask, tokentype_ids = inputs
-
-        embedding_output = super().forward(input_ids, position_ids, tokentype_ids)
-
-        return (embedding_output, attention_mask)
 
 
 class ParallelTransformerLayerPipe(ParallelTransformerLayer):
@@ -203,7 +202,7 @@ class GPT2ModelPipe(PipelineModule):
         specs = []
         # Embedding
         embedding_args = [args.hidden_size, args.padded_vocab_size,
-                          args.padded_vocab_size, args.max_position_embeddings,
+                          args.max_position_embeddings, args.hidden_dropout,
                           init_method, num_tokentypes]
         specs.append(TiedLayerSpec("embed", EmbeddingPipe, *embedding_args))
         # Transformer
@@ -229,7 +228,26 @@ class GPT2ModelPipe(PipelineModule):
         specs.append(TiedLayerSpec("embed", EmbeddingPipe, *embedding_args,
                                    forward_fn=tied_embedding_forward))
         print_rank_0(specs)
+
+        def loss_fn(outputs, labels):
+            if self.fp16_lm_cross_entropy:
+                assert outputs.dtype == torch.half
+                loss = mpu.vocab_parallel_cross_entropy(outputs, labels)
+            else:
+                loss = mpu.vocab_parallel_cross_entropy(outputs.float(), labels)
+
+            # Loss mask.
+            loss_mask = torch.ones(loss.size(), dtype=torch.float, device=loss.device)
+            # ignoring this because eod_mask_loss is False
+            # if eod_mask_loss:
+            #     loss_mask[data == eod_token] = 0.0
+
+            loss_mask = loss_mask.view(-1)
+            loss = torch.sum(loss.view(-1) * loss_mask) / loss_mask.sum()
+
+            return loss
+
         super().__init__(layers=specs,
-                         loss_fn=mpu.vocab_parallel_cross_entropy,
-                         num_stages=2,
+                         loss_fn=loss_fn,
+                         num_stages=1,
                          partition_method="parameters")
