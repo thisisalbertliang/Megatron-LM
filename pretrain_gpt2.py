@@ -24,15 +24,21 @@ from megatron import get_tokenizer
 from megatron import mpu
 from megatron.data.gpt2_dataset import build_train_valid_test_datasets
 from megatron.model import GPT2Model
+from megatron.model.pipe_modules import GPT2ModelPipe
 from megatron.training import pretrain
 from megatron.utils import get_ltor_masks_and_position_ids
 from megatron.utils import reduce_losses
 
-def model_provider():
+def model_provider(pipeline):
     """Build the model."""
 
     print_rank_0('building GPT2 model ...')
-    model = GPT2Model(num_tokentypes=0, parallel_output=True)
+    if not pipeline:
+        model = GPT2Model(num_tokentypes=0, parallel_output=True)
+    else:
+        print_rank_0("building PipeModule ...")
+        model = GPT2ModelPipe(num_tokentypes=0, parallel_output=True,
+                              num_stages=2)
 
     return model
 
@@ -78,13 +84,6 @@ def forward_step(data_iterator, model):
     timers('batch generator').start()
     tokens, labels, loss_mask, attention_mask, position_ids = get_batch(
         data_iterator)
-
-    # print_rank_0('ALBERT DEBUG: ' + 'tokens.shape: ' + str(tokens.shape))
-    # print_rank_0('ALBERT DEBUG: ' + 'labels.shape: ' + str(labels.shape))
-    # print_rank_0('ALBERT DEBUG: ' + 'loss_mask.shape: ' + str(loss_mask.shape))
-    # print_rank_0('ALBERT DEBUG: ' + 'attention_mask.shape: ' + str(attention_mask.shape))
-    # print_rank_0('ALBERT DEBUG: ' + 'position_ids.shape: ' + str(position_ids.shape))
-
     timers('batch generator').stop()
     # Forward model.
     losses = model(tokens, position_ids, attention_mask, labels=labels)
@@ -93,8 +92,6 @@ def forward_step(data_iterator, model):
 
     # Reduce loss for logging.
     reduced_loss = reduce_losses([loss])
-
-    print('ALBERT DEBUG: ', 'loss: ', loss)
 
     return loss, {'lm loss': reduced_loss[0]}
 

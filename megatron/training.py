@@ -17,10 +17,13 @@
 
 from datetime import datetime
 import math
+import inspect
 import sys
 import torch
 from torch.nn.parallel.distributed import DistributedDataParallel as torchDDP
 from apex.optimizers import FusedAdam as Adam
+from deepspeed.pipe import PipelineModule
+from deepspeed.utils import RepeatingLoader
 
 from megatron import get_args
 from megatron import get_timers
@@ -29,6 +32,7 @@ from megatron import mpu
 from megatron import print_rank_0
 from megatron.checkpointing import load_checkpoint
 from megatron.checkpointing import save_checkpoint
+from megatron.data.pipe_loader import PipeLoader
 from megatron.fp16 import FP16_Module
 from megatron.fp16 import FP16_Optimizer
 from megatron.initialize import initialize_megatron
@@ -42,7 +46,8 @@ from megatron.utils import report_memory
 
 
 def pretrain(train_valid_test_dataset_provider, model_provider,
-             forward_step_func, extra_args_provider=None, args_defaults={}):
+             forward_step_func, pipeline=True, extra_args_provider=None,
+             args_defaults={}):
     """Main training program.
 
     This function will run the followings in the order provided:
@@ -76,7 +81,10 @@ def pretrain(train_valid_test_dataset_provider, model_provider,
 
     # Model, optimizer, and learning rate.
     timers('model and optimizer').start()
-    model, optimizer, lr_scheduler = setup_model_and_optimizer(model_provider)
+    model, optimizer, lr_scheduler = setup_model_and_optimizer(
+        model_provider,
+        pipeline
+    )
     timers('model and optimizer').stop()
 
     # Data stuff.
@@ -84,16 +92,14 @@ def pretrain(train_valid_test_dataset_provider, model_provider,
     train_data_iterator, valid_data_iterator, test_data_iterator \
         = build_train_valid_test_data_iterators(
             train_valid_test_dataset_provider)
+    if pipeline:
+        train_data_iterator = PipeLoader(train_data_iterator)
+        valid_data_iterator = PipeLoader(valid_data_iterator)
+        test_data_iterator = PipeLoader(test_data_iterator)
+        train_data_iterator = RepeatingLoader(train_data_iterator)
+        valid_data_iterator = RepeatingLoader(valid_data_iterator)
+        test_data_iterator = RepeatingLoader(test_data_iterator)
     timers('train/valid/test data iterators').stop()
-
-    # ALBERT DEBUGGING - START
-    # print("ALBERT!!!!!!!!!!!!!!!!!!!!")
-    # print('type(train_data_iterator)', type(train_data_iterator))
-    # for x in train_data_iterator:
-    #     print('type(x)', type(x))
-    #     print(x)
-    #     break
-    # ALBERT DEBUGGING - END
 
     # Print setup timing.
     print_rank_0('done with setups ...')
@@ -102,9 +108,10 @@ def pretrain(train_valid_test_dataset_provider, model_provider,
 
     iteration = 0
     if args.do_train and args.train_iters > 0:
-        iteration = train(forward_step_func,
-                          model, optimizer, lr_scheduler,
-                          train_data_iterator, valid_data_iterator)
+        iteration, _ = train(forward_step_func,
+                             model, optimizer, lr_scheduler,
+                             train_data_iterator, valid_data_iterator,
+                             pipeline)
 
     if args.do_valid:
         prefix = 'the end of training for val data'
@@ -123,12 +130,14 @@ def pretrain(train_valid_test_dataset_provider, model_provider,
                                    0, True)
 
 
-def get_model(model_provider_func):
+def get_model(model_provider_func, pipeline):
     """Build the model."""
     args = get_args()
 
     # Build model on cpu.
-    model = model_provider_func()
+    model = model_provider_func(pipeline)
+    if pipeline:
+        return model
 
     # Print number of parameters.
     if mpu.get_data_parallel_rank() == 0:
@@ -173,14 +182,11 @@ def get_optimizer(model):
                 param.model_parallel = False
 
     # Use Adam.
-    optimizer = Adam(param_groups, lr=args.lr, weight_decay=args.weight_decay,
-        betas=(args.adam_beta1, args.adam_beta2), eps=args.adam_eps)
+    optimizer = Adam(param_groups, lr=args.lr, weight_decay=args.weight_decay)
 
-    # ALBERT - START
     if args.deepspeed:
         # fp16 wrapper is not required for DeepSpeed.
         return optimizer
-    # ALBERT - END
 
     # Wrap into fp16 optimizer.
     if args.fp16:
@@ -221,15 +227,16 @@ def get_learning_rate_scheduler(optimizer):
     return lr_scheduler
 
 
-def setup_model_and_optimizer(model_provider_func):
+def setup_model_and_optimizer(model_provider_func, pipeline):
     """Setup model and optimizer."""
     args = get_args()
 
-    model = get_model(model_provider_func)
+    model = get_model(model_provider_func, pipeline)
     optimizer = get_optimizer(model)
     lr_scheduler = get_learning_rate_scheduler(optimizer)
 
-    # ALBERT - START
+    print_rank_0(pipeline)
+    print_rank_0(isinstance(model, PipelineModule))
     if args.deepspeed:
         import deepspeed
 
@@ -240,10 +247,9 @@ def setup_model_and_optimizer(model_provider_func):
             optimizer=optimizer,
             args=args,
             lr_scheduler=lr_scheduler,
-            mpu=mpu,
+            #mpu=mpu,
             dist_init_required=False
-        )
-    # ALBERT - END
+       )
 
     if args.load is not None:
         args.iteration = load_checkpoint(model, optimizer, lr_scheduler)
@@ -269,7 +275,6 @@ def backward_step(optimizer, model, loss):
 
     # Backward pass.
     timers('backward-backward').start()
-    # ALBERT - START
     if args.deepspeed:
         model.backward(loss)
     else:
@@ -278,17 +283,15 @@ def backward_step(optimizer, model, loss):
             optimizer.backward(loss, update_master_grads=False)
         else:
             loss.backward()
-    # ALBERT - END
     timers('backward-backward').stop()
 
     # All-reduce if needed.
-    if (not args.deepspeed) and (args.DDP_impl == 'local'):     # ALBERT
+    if (not args.deepspeed) and (args.DDP_impl == 'local'):
         timers('backward-allreduce').start()
         model.allreduce_params(reduce_after=False,
                                fp32_allreduce=args.fp32_allreduce)
         timers('backward-allreduce').stop()
 
-    # ALBERT - START
     if not args.deepspeed:
         # Update master gradients.
         timers('backward-master-grad').start()
@@ -304,14 +307,18 @@ def backward_step(optimizer, model, loss):
             else:
                 optimizer.clip_master_grads(args.clip_grad)
         timers('backward-clip-grad').stop()
-    # ALBERT - END
 
 
 def train_step(forward_step_func, data_iterator,
-               model, optimizer, lr_scheduler):
+               model, optimizer, lr_scheduler, pipeline):
     """Single training step."""
     args = get_args()
     timers = get_timers()
+
+    if pipeline:
+        loss = model.train_batch(data_iter=data_iterator)
+
+        return {'lm loss': loss}, 0
 
     # Forward model for one step.
     timers('forward').start()
@@ -325,50 +332,32 @@ def train_step(forward_step_func, data_iterator,
 
     # Update parameters.
     timers('optimizer').start()
-    # ALBERT - START
     skipped_iter = 0
     if args.deepspeed:
         model.step()
     else:
         optimizer.step()
+
         # Update learning rate.
         if not (args.fp16 and optimizer.overflow):
             lr_scheduler.step()
         else:
             skipped_iter = 1
-    # ALBERT - END
     timers('optimizer').stop()
 
     return loss_reduced, skipped_iter
 
 
 def training_log(loss_dict, total_loss_dict, learning_rate, iteration,
-                 loss_scale, report_memory_flag, skipped_iter, optimizer):
+                 loss_scale, report_memory_flag):
     """Log training information such as losses, timing, ...."""
     args = get_args()
     timers = get_timers()
     writer = get_tensorboard_writer()
 
     # Update losses.
-    skipped_iters_key = 'skipped iterations'
-    total_loss_dict[skipped_iters_key] = total_loss_dict.get(
-        skipped_iters_key, 0) + skipped_iter
-    got_nan_key = 'got nan'
-
-    got_nan = False
     for key in loss_dict:
-        if not skipped_iter:
-            total_loss_dict[key] = total_loss_dict.get(
-                key, torch.cuda.FloatTensor([0.0])) + loss_dict[key]
-        else:
-            value = loss_dict[key].float().sum().item()
-            is_nan = value == float('inf') or \
-                     value == -float('inf') or \
-                     value != value
-            got_nan = got_nan or is_nan
-
-    total_loss_dict[got_nan_key] = total_loss_dict.get(
-        got_nan_key, 0) + int(got_nan)
+        total_loss_dict[key] = total_loss_dict.get(key, 0.) + loss_dict[key]
 
     # Logging.
     timers_to_log = []
@@ -408,23 +397,12 @@ def training_log(loss_dict, total_loss_dict, learning_rate, iteration,
         log_string += ' elapsed time per iteration (ms): {:.1f} |'.format(
             elapsed_time * 1000.0 / args.log_interval)
         log_string += ' learning rate: {:.3E} |'.format(learning_rate)
-        num_iterations = max(
-            1, args.log_interval - total_loss_dict[skipped_iters_key])
         for key in total_loss_dict:
-            if key not in [skipped_iters_key, got_nan_key]:
-                avg = total_loss_dict[key].item() / float(num_iterations)
-                if avg > 0.0:
-                    log_string += ' {}: {:.6E} |'.format(key, avg)
-                total_loss_dict[key] = torch.cuda.FloatTensor([0.0])
+            avg = total_loss_dict[key].item() / args.log_interval
+            log_string += ' {}: {:.6E} |'.format(key, avg)
+            total_loss_dict[key] = 0.0
         if args.fp16:
-            log_string += ' loss scale: {:.1f} |'.format(
-                optimizer.cur_scale if args.deepspeed else loss_scale)      # ALBERT
-        log_string += ' number of skipped iterations: {:3d} |'.format(
-            total_loss_dict[skipped_iters_key])
-        log_string += ' number of nan iterations: {:3d} |'.format(
-            total_loss_dict[got_nan_key])
-        total_loss_dict[skipped_iters_key] = 0
-        total_loss_dict[got_nan_key] = 0
+            log_string += ' loss scale: {:.1f} |'.format(loss_scale)
         print_rank_0(log_string)
         if report_memory_flag:
             report_memory('after {} iterations'.format(iteration))
@@ -435,7 +413,7 @@ def training_log(loss_dict, total_loss_dict, learning_rate, iteration,
 
 
 def train(forward_step_func, model, optimizer, lr_scheduler,
-          train_data_iterator, valid_data_iterator):
+          train_data_iterator, valid_data_iterator, pipeline):
     """Train the model function."""
     args = get_args()
     timers = get_timers()
@@ -448,6 +426,7 @@ def train(forward_step_func, model, optimizer, lr_scheduler,
 
     # Iterations.
     iteration = args.iteration
+    skipped_iters = 0
 
     timers('interval time').start()
     report_memory_flag = True
@@ -456,18 +435,20 @@ def train(forward_step_func, model, optimizer, lr_scheduler,
                                              train_data_iterator,
                                              model,
                                              optimizer,
-                                             lr_scheduler)
+                                             lr_scheduler,
+                                             pipeline)
+        skipped_iters += skipped_iter
         iteration += 1
 
         # Logging.
         loss_scale = None
         if args.fp16:
-            loss_scale = optimizer.loss_scale
+            loss_scale = optimizer.cur_scale if args.deepspeed else \
+                optimizer.loss_scale
         report_memory_flag = training_log(loss_dict, total_loss_dict,
                                           optimizer.param_groups[0]['lr'],
                                           iteration, loss_scale,
-                                          report_memory_flag, skipped_iter,
-                                          optimizer)    # ALBERT, added for logging optimizer.cur_scale
+                                          report_memory_flag)
 
         # Autoresume
         if args.adlr_autoresume and \
@@ -496,7 +477,7 @@ def train(forward_step_func, model, optimizer, lr_scheduler,
                          'iteration {}'.format(rank, time_str, iteration))
             sys.exit()
 
-    return iteration
+    return iteration, skipped_iters
 
 
 def evaluate(forward_step_func, data_iterator, model, verbose=False):
@@ -563,9 +544,6 @@ def build_train_valid_test_data_iterators(
 
     print_rank_0('> building train, validation, and test datasets ...')
     # Data loader only on rank 0 of each model parallel group.
-
-    print('ALBERT DEBUG:', 'RANK', mpu.get_model_parallel_rank(), 'entered build_train_valid_test_data_iterators')
-
     if mpu.get_model_parallel_rank() == 0:
         # Rank, size, and global batch size.
         data_parallel_size = mpu.get_data_parallel_world_size()

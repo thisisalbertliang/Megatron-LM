@@ -39,16 +39,8 @@ def get_pipe_language_model(attention_mask_func, num_tokentypes,
 
     return language_model, language_model_key
 
-class EmbeddingPipe(Embedding):
-    def forward(self, inputs):
-        input_ids, position_ids, attention_mask, tokentype_ids = inputs
 
-        embedding_output = super().forward(input_ids, position_ids, tokentype_ids)
-
-        return (embedding_output, attention_mask)
-
-
-def tied_embedding_forward(module: EmbeddingPipe, inputs):
+def tied_embedding_forward(module, inputs):
     outputs = parallel_lm_logits(inputs,
                                  module.word_embeddings.weight,
                                  True)
@@ -81,6 +73,15 @@ class FinalLayerNormPipe(MegatronModule):
 
         return output
         #return (output, attention_mask)
+
+
+class EmbeddingPipe(Embedding):
+    def forward(self, inputs):
+        input_ids, position_ids, attention_mask = inputs
+
+        embedding_output = super().forward(input_ids, position_ids)
+
+        return (embedding_output, attention_mask)
 
 
 class ParallelTransformerLayerPipe(ParallelTransformerLayer):
@@ -189,7 +190,8 @@ class TransformerLanguageModelPipe(MegatronModule):
 class GPT2ModelPipe(PipelineModule):
     """GPT-2 Language model."""
 
-    def __init__(self, num_tokentypes=0, parallel_output=True):
+    def __init__(self, num_tokentypes=0, parallel_output=True, num_stages=1,
+                 **kwargs):
         args = get_args()
 
         self.parallel_output = parallel_output
@@ -204,7 +206,8 @@ class GPT2ModelPipe(PipelineModule):
         embedding_args = [args.hidden_size, args.padded_vocab_size,
                           args.max_position_embeddings, args.hidden_dropout,
                           init_method, num_tokentypes]
-        specs.append(TiedLayerSpec("embed", EmbeddingPipe, *embedding_args))
+        specs.append(TiedLayerSpec("embed", EmbeddingPipe, *embedding_args,
+                                   tied_weight_attr="word_embeddings.weight"))
         # Transformer
         specs.append(LayerSpec(TransposePipe))
         if args.checkpoint_activations:
@@ -226,28 +229,25 @@ class GPT2ModelPipe(PipelineModule):
         specs.append(LayerSpec(TransposePipe))
         specs.append(LayerSpec(FinalLayerNormPipe))
         specs.append(TiedLayerSpec("embed", EmbeddingPipe, *embedding_args,
-                                   forward_fn=tied_embedding_forward))
-        print_rank_0(specs)
+                                   forward_fn=tied_embedding_forward,
+                                   tied_weight_attr="word_embeddings.weight"))
 
-        def loss_fn(outputs, labels):
+        def loss_fn(outputs, labels_and_mask):
+            labels, loss_mask = labels_and_mask
+
             if self.fp16_lm_cross_entropy:
                 assert outputs.dtype == torch.half
-                loss = mpu.vocab_parallel_cross_entropy(outputs, labels)
+                losses = mpu.vocab_parallel_cross_entropy(outputs, labels)
             else:
-                loss = mpu.vocab_parallel_cross_entropy(outputs.float(), labels)
-
-            # Loss mask.
-            loss_mask = torch.ones(loss.size(), dtype=torch.float, device=loss.device)
-            # ignoring this because eod_mask_loss is False
-            # if eod_mask_loss:
-            #     loss_mask[data == eod_token] = 0.0
+                losses = mpu.vocab_parallel_cross_entropy(outputs.float(), labels)
 
             loss_mask = loss_mask.view(-1)
-            loss = torch.sum(loss.view(-1) * loss_mask) / loss_mask.sum()
+            loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask.sum()
 
             return loss
 
         super().__init__(layers=specs,
                          loss_fn=loss_fn,
-                         num_stages=1,
-                         partition_method="parameters")
+                         num_stages=num_stages,
+                         partition_method="parameters",
+                         **kwargs)

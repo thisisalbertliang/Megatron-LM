@@ -1,25 +1,20 @@
 #! /bin/bash
 
-# Runs the "345M" parameter model
-
-GPUS_PER_NODE=1
 # Change for multinode config
-MASTER_ADDR=h0.albert.biglearning
-MASTER_PORT=6000
-NNODES=8
-NODE_RANK=$1
-WORLD_SIZE=$(($GPUS_PER_NODE*$NNODES))
+MP_SIZE=1
 
-DATA_PATH=/users/sangkeuc/albert/ds-megatron/Megatron-LM-No-PP/preprocessed_data/my-gpt2_text_document
+NUM_WORKERS=2
+NUM_GPUS_PER_WORKER=1
 
-DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT"
+HOSTFILE="/home/ubuntu/workspace/Megatron-LM/scripts/hostfile"
+DATA_PATH="/home/ubuntu/workspace/Megatron-LM/data/my-gpt2_text_document"
+config_json="/home/ubuntu/workspace/Megatron-LM/scripts/ds_zero2_config.json"
 
-python -m torch.distributed.launch $DISTRIBUTED_ARGS \
-       pretrain_gpt2.py \
-       --model-parallel-size 1 \
-       --num-layers 24 \
-       --hidden-size 1024 \
-       --num-attention-heads 16 \
+gpt_options=" \
+       --model-parallel-size $MP_SIZE \
+       --num-layers 4 \
+       --hidden-size 512 \
+       --num-attention-heads 8 \
        --batch-size 8 \
        --seq-length 1024 \
        --max-position-embeddings 1024 \
@@ -37,13 +32,18 @@ python -m torch.distributed.launch $DISTRIBUTED_ARGS \
        --weight-decay 1e-2 \
        --clip-grad 1.0 \
        --warmup .01 \
-       --checkpoint-activations \
        --log-interval 100 \
        --save-interval 10000 \
        --eval-interval 1000 \
        --eval-iters 10 \
-       --fp16
+       --fp16 \
+       --deepspeed \
+       --deepspeed_config ${config_json} \
+#"
 
 
+run_cmd="deepspeed pretrain_gpt2.py $@ ${gpt_options}"
+echo ${run_cmd}
+eval ${run_cmd}
 
 set +x
