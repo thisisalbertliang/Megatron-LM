@@ -17,6 +17,7 @@
 """Model and data parallel groups."""
 
 import torch
+from deepspeed.runtime.pipe.topology import PipelineParallelGrid
 
 from .utils import ensure_divisibility
 
@@ -29,6 +30,12 @@ _DATA_PARALLEL_GROUP = None
 # These values enable us to change the mpu sizes on the fly.
 _MPU_WORLD_SIZE = None
 _MPU_RANK = None
+
+# Access to DeepSpeed 3D parallelism mpu
+_DEEPSPEED_MPU: PipelineParallelGrid = None
+
+# This flag allows checking whether DeepSpeed mpu initialization is used
+_DEEPSPEED = False
 
 
 def is_unitialized():
@@ -87,6 +94,39 @@ def initialize_model_parallel(model_parallel_size_):
             _MODEL_PARALLEL_GROUP = group
 
 
+def initialize_model_parallel_with_deepspeed(deepspeed_mpu: PipelineParallelGrid):
+    """
+        Initialize model data parallel groups using DeepSpeed mpu
+    """
+    assert deepspeed_mpu is not None, 'DeepSpeed mpu cannot be None'
+    global_rank = deepspeed_mpu.get_global_rank()
+    if global_rank == 0:
+        print('> initializing megatron mpu using DeepSpeed mpu {}'.format(deepspeed_mpu))
+    # Get world size and rank. Ensure some consistencies.
+    assert torch.distributed.is_initialized()
+    world_size = torch.distributed.get_world_size()
+    model_parallel_size = min(deepspeed_mpu.get_model_parallel_world_size(), world_size)
+    ensure_divisibility(world_size, model_parallel_size)
+
+    # Set the data parallel groups.
+    global _DATA_PARALLEL_GROUP
+    assert _DATA_PARALLEL_GROUP is None, \
+        'data parallel group is already initialized'
+    _DATA_PARALLEL_GROUP = deepspeed_mpu.get_data_parallel_group()
+
+    # Set the model parallel groups.
+    global _MODEL_PARALLEL_GROUP
+    assert _MODEL_PARALLEL_GROUP is None, \
+        'model parallel group is already initialized'
+    _MODEL_PARALLEL_GROUP = deepspeed_mpu.get_model_parallel_group()
+
+    global _DEEPSPEED_MPU
+    _DEEPSPEED_MPU = deepspeed_mpu
+
+    global _DEEPSPEED
+    _DEEPSPEED = True
+
+
 def model_parallel_is_initialized():
     """Check if model and data parallel groups are initialized."""
     if _MODEL_PARALLEL_GROUP is None or _DATA_PARALLEL_GROUP is None:
@@ -110,12 +150,18 @@ def get_data_parallel_group():
 
 def set_model_parallel_world_size(world_size):
     """Set the model parallel size"""
+    if _DEEPSPEED:
+        raise RuntimeError('Model parallelism is managed by DeepSpeed. '
+                           'Setting the model parallel size is prohibited')
     global _MPU_WORLD_SIZE
     _MPU_WORLD_SIZE = world_size
 
 
 def get_model_parallel_world_size():
     """Return world size for the model parallel group."""
+    if _DEEPSPEED:
+        return _DEEPSPEED_MPU.get_model_parallel_world_size()
+
     global _MPU_WORLD_SIZE
     if _MPU_WORLD_SIZE is not None:
         return _MPU_WORLD_SIZE
@@ -124,12 +170,18 @@ def get_model_parallel_world_size():
 
 def set_model_parallel_rank(rank):
     """Set model parallel rank."""
+    if _DEEPSPEED:
+        raise RuntimeError('Model parallelism is managed by DeepSpeed. '
+                           'Setting the model parallel rank is prohibited')
     global _MPU_RANK
     _MPU_RANK = rank
 
 
 def get_model_parallel_rank():
     """Return my rank for the model parallel group."""
+    if _DEEPSPEED:
+        return _DEEPSPEED_MPU.get_model_parallel_rank()
+
     global _MPU_RANK
     if _MPU_RANK is not None:
         return _MPU_RANK
@@ -139,18 +191,24 @@ def get_model_parallel_rank():
 def get_model_parallel_src_rank():
     """Calculate the global rank corresponding to a local rank zeor
     in the model parallel group."""
-    global_rank = torch.distributed.get_rank()
+    global_rank = _DEEPSPEED_MPU.get_global_rank() if _DEEPSPEED else torch.distributed.get_rank()
     local_world_size = get_model_parallel_world_size()
     return (global_rank // local_world_size) * local_world_size
 
 
 def get_data_parallel_world_size():
     """Return world size for the data parallel group."""
+    if _DEEPSPEED:
+        return _DEEPSPEED_MPU.get_data_parallel_world_size()
+
     return torch.distributed.get_world_size(group=get_data_parallel_group())
 
 
 def get_data_parallel_rank():
     """Return my rank for the data parallel group."""
+    if _DEEPSPEED:
+        return _DEEPSPEED_MPU.get_data_parallel_rank()
+
     return torch.distributed.get_rank(group=get_data_parallel_group())
 
 

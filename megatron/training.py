@@ -46,7 +46,7 @@ from megatron.utils import report_memory
 
 
 def pretrain(train_valid_test_dataset_provider, model_provider,
-             forward_step_func, pipeline=True, extra_args_provider=None,
+             forward_step_func, pipeline=False, extra_args_provider=None,
              args_defaults={}):
     """Main training program.
 
@@ -74,7 +74,8 @@ def pretrain(train_valid_test_dataset_provider, model_provider,
 
     # Initalize and get arguments, timers, and Tensorboard writer.
     initialize_megatron(extra_args_provider=extra_args_provider,
-                        args_defaults=args_defaults)
+                        args_defaults=args_defaults,
+                        pipeline=pipeline)
 
     args = get_args()
     timers = get_timers()

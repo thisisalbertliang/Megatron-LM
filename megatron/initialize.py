@@ -18,8 +18,11 @@
 import random
 import os
 
+import deepspeed
 import numpy as np
 import torch
+import torch.distributed
+from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology, PipelineParallelGrid
 
 from megatron import get_adlr_autoresume
 from megatron import get_args
@@ -28,7 +31,7 @@ from megatron import mpu
 from megatron.global_vars import set_global_variables
 from megatron.mpu import set_model_parallel_rank, set_model_parallel_world_size
 
-def initialize_megatron(extra_args_provider=None, args_defaults={},
+def initialize_megatron(pipeline=False, extra_args_provider=None, args_defaults={},
                         ignore_unknown_args=False, allow_no_cuda=False):
     """Set global variables, initialize distributed, and
     set autoresume and random seeds.
@@ -53,7 +56,19 @@ def initialize_megatron(extra_args_provider=None, args_defaults={},
     def finish_mpu_init():
         args = get_args()
         # Pytorch distributed.
-        _initialize_distributed()
+        if pipeline:
+            deepspeed.init_distributed('nccl')
+            # Contruct pipeline topology
+            topology_3d = PipeModelDataParallelTopology(num_pp=args.num_pp,
+                                                        num_mp=args.num_mp,
+                                                        num_dp=args.num_dp)
+            # Contruct communicators for DeepSpeed pipeline topology
+            world_group = torch.distributed.new_group(ranks=range(torch.distributed.get_world_size()))
+            deepspeed_mpu = PipelineParallelGrid(process_group=world_group,
+                                                 topology=topology_3d)
+            mpu.initialize_model_parallel_with_deepspeed(deepspeed_mpu)
+        else:
+            _initialize_distributed()
         
         # Random seeds for reproducibility.
         if args.rank == 0:

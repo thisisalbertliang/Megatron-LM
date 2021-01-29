@@ -14,6 +14,7 @@
 # limitations under the License.
 
 """Pretrain GPT2"""
+from argparse import ArgumentParser
 
 import torch
 
@@ -37,8 +38,7 @@ def model_provider(pipeline):
         model = GPT2Model(num_tokentypes=0, parallel_output=True)
     else:
         print_rank_0("building PipeModule ...")
-        model = GPT2ModelPipe(num_tokentypes=0, parallel_output=True,
-                              num_stages=2)
+        model = GPT2ModelPipe(num_tokentypes=0, parallel_output=True)
 
     return model
 
@@ -115,7 +115,20 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
     return train_ds, valid_ds, test_ds
 
 
+def extra_args_provider(parser: ArgumentParser):
+    group = parser.add_argument_group(title='DeepSpeed 3D parallelism')
+    group.add_argument('--num-pp', type=int, default=-1,
+                       help='Number of stages in each pipeline')
+    group.add_argument('--num-mp', type=int, default=-1,
+                       help='Number of model parallel workers in each pipeline stage')
+    group.add_argument('--num-dp', type=int, default=-1,
+                       help='Number of data parallel pipelines')
+    return parser
+
+
 if __name__ == "__main__":
 
     pretrain(train_valid_test_datasets_provider, model_provider, forward_step,
-             args_defaults={'tokenizer_type': 'GPT2BPETokenizer'})
+             args_defaults={'tokenizer_type': 'GPT2BPETokenizer'},
+             extra_args_provider=extra_args_provider,
+             pipeline=True)

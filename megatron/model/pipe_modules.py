@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from deepspeed.pipe import PipelineModule, LayerSpec, TiedLayerSpec
+from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
 
 from megatron import get_args
 from megatron import mpu
@@ -190,8 +191,8 @@ class TransformerLanguageModelPipe(MegatronModule):
 class GPT2ModelPipe(PipelineModule):
     """GPT-2 Language model."""
 
-    def __init__(self, num_tokentypes=0, parallel_output=True, num_stages=1,
-                 **kwargs):
+    def __init__(self, num_tokentypes=0, parallel_output=True):
+
         args = get_args()
 
         self.parallel_output = parallel_output
@@ -246,8 +247,15 @@ class GPT2ModelPipe(PipelineModule):
 
             return loss
 
+        if args.num_pp == -1 or args.num_mp == -1 or args.num_dp == -1:
+            raise ValueError('To enable DeepSpeed 3D parallelism, '
+                             'you must specify each of num-pp, num-mp, and num-dp')
+        topology_3d = PipeModelDataParallelTopology(num_pp=args.num_pp,
+                                                    num_mp=args.num_mp,
+                                                    num_dp=args.num_dp)
+        print_rank_0(f'Initializing DeepSpeed 3D parallelism with topology {topology_3d}')
+
         super().__init__(layers=specs,
                          loss_fn=loss_fn,
-                         num_stages=num_stages,
                          partition_method="parameters",
-                         **kwargs)
+                         topology=topology_3d)
