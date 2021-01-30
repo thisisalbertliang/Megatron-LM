@@ -5,8 +5,8 @@ NUM_WORKERS=4
 NUM_GPUS_PER_WORKER=1
 WORLD_SIZE=$((NUM_WORKERS*NUM_GPUS_PER_WORKER))
 
-MP_SIZE=1
-PP_SIZE=1
+MP_SIZE=2
+PP_SIZE=2
 DP_SIZE=$((WORLD_SIZE/(MP_SIZE*PP_SIZE)))
 
 HOSTFILE="/users/sangkeuc/albert/ds-megatron/old-Megatron-LM/albert_scripts/myhostfile"

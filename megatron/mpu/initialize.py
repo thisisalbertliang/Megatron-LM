@@ -127,6 +127,35 @@ def initialize_model_parallel_with_deepspeed(deepspeed_mpu: PipelineParallelGrid
     _DEEPSPEED = True
 
 
+# def reset_model_parallel_with_deepspeed(deepspeed_mpu: PipelineParallelGrid):
+#     """
+#         Reset model data parallel groups to use DeepSpeed mpu
+#     """
+#     assert deepspeed_mpu is not None, 'DeepSpeed mpu cannot be None'
+#     global_rank = deepspeed_mpu.get_global_rank()
+#     if global_rank == 0:
+#         print('> Resetting megatron mpu to use DeepSpeed mpu {}'.format(deepspeed_mpu))
+#     # Get world size and rank. Ensure some consistencies.
+#     assert torch.distributed.is_initialized()
+#     world_size = torch.distributed.get_world_size()
+#     model_parallel_size = min(deepspeed_mpu.get_model_parallel_world_size(), world_size)
+#     ensure_divisibility(world_size, model_parallel_size)
+#
+#     # Set the data parallel groups.
+#     global _DATA_PARALLEL_GROUP
+#     _DATA_PARALLEL_GROUP = deepspeed_mpu.get_data_parallel_group()
+#
+#     # Set the model parallel groups.
+#     global _MODEL_PARALLEL_GROUP
+#     _MODEL_PARALLEL_GROUP = deepspeed_mpu.get_model_parallel_group()
+#
+#     global _DEEPSPEED_MPU
+#     _DEEPSPEED_MPU = deepspeed_mpu
+#
+#     global _DEEPSPEED
+#     _DEEPSPEED = True
+
+
 def model_parallel_is_initialized():
     """Check if model and data parallel groups are initialized."""
     if _MODEL_PARALLEL_GROUP is None or _DATA_PARALLEL_GROUP is None:

@@ -33,6 +33,7 @@ from .initialize import get_model_parallel_world_size, set_model_parallel_world_
 from .initialize import initialize_model_parallel
 from .initialize import model_parallel_is_initialized
 from .initialize import initialize_model_parallel_with_deepspeed
+# from .initialize import reset_model_parallel_with_deepspeed
 
 from .layers import LayerNorm
 from .layers import ColumnParallelLinear

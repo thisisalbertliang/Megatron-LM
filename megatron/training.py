@@ -19,7 +19,12 @@ from datetime import datetime
 import math
 import inspect
 import sys
+from typing import Tuple
+
 import torch
+import torch.distributed as dist
+from deepspeed.runtime.pipe.topology import PipelineParallelGrid
+from torch import Tensor
 from torch.nn.parallel.distributed import DistributedDataParallel as torchDDP
 from apex.optimizers import FusedAdam as Adam
 from deepspeed.pipe import PipelineModule
@@ -251,6 +256,44 @@ def setup_model_and_optimizer(model_provider_func, pipeline):
             #mpu=mpu,
             dist_init_required=False
        )
+        # mpu.reset_model_parallel_with_deepspeed(model.mpu)
+
+        def batch_fn(batch: Tuple[Tuple[Tensor, Tensor, Tensor], Tuple[Tensor, Tensor]]):
+            deepspeed_mpu: PipelineParallelGrid = model.mpu
+            if deepspeed_mpu.get_model_parallel_rank() == 0:
+                inputs, labels = batch
+                # tokens shape: (train_micro_batch_size_per_gpu, seq_length)
+                # positions shape: (train_micro_batch_size_per_gpu, seq_length)
+                # attention_mask shape: (1, 1, seq_length, seq_length)
+                tokens, positions, attention_mask = inputs
+                # labels shape: (train_micro_batch_size_per_gpu, seq_length)
+                # loss_mask shape: (train_micro_batch_size_per_gpu, seq_length)
+                labels, loss_mask = labels
+                tokens = tokens.contiguous()
+                positions = positions.contiguous()
+                attention_mask = attention_mask.contiguous()
+                labels = labels.contiguous()
+                loss_mask = loss_mask.contiguous()
+            else:
+                tokens, positions, attention_mask \
+                    = torch.zeros([model.train_micro_batch_size_per_gpu(), args.seq_length], dtype=torch.int64).cuda(), \
+                      torch.zeros([model.train_micro_batch_size_per_gpu(), args.seq_length], dtype=torch.int64).cuda(), \
+                      torch.zeros([1, 1, args.seq_length, args.seq_length], dtype=torch.bool).cuda()
+                labels, loss_mask = torch.zeros([model.train_micro_batch_size_per_gpu(), args.seq_length], dtype=torch.int64).cuda(), \
+                                    torch.zeros([model.train_micro_batch_size_per_gpu(), args.seq_length], dtype=torch.float32).cuda()
+            # print(f'ALBERT DEBUG: mp_rank {deepspeed_mpu.get_model_parallel_rank()}: deepspeed_mpu.get_model_parallel_group(): {deepspeed_mpu.get_model_parallel_group()}')
+            # print(f'ALBERT DEBUG: mp_rank {deepspeed_mpu.get_model_parallel_rank()}: mpu.get_model_parallel_group(): {mpu.get_model_parallel_group()}')
+            torch.distributed.broadcast(tensor=tokens, src=mpu.get_model_parallel_src_rank(), group=deepspeed_mpu.get_model_parallel_group())
+            torch.distributed.broadcast(tensor=positions, src=mpu.get_model_parallel_src_rank(), group=deepspeed_mpu.get_model_parallel_group())
+            torch.distributed.broadcast(tensor=attention_mask, src=mpu.get_model_parallel_src_rank(), group=deepspeed_mpu.get_model_parallel_group())
+            torch.distributed.broadcast(tensor=labels, src=mpu.get_model_parallel_src_rank(), group=deepspeed_mpu.get_model_parallel_group())
+            torch.distributed.broadcast(tensor=loss_mask, src=mpu.get_model_parallel_src_rank(), group=deepspeed_mpu.get_model_parallel_group())
+
+            return (tokens, positions, attention_mask), (labels, loss_mask)
+
+        if mpu.get_model_parallel_world_size() > 1:
+            model.set_batch_fn(batch_fn)
+
 
     if args.load is not None:
         args.iteration = load_checkpoint(model, optimizer, lr_scheduler)
